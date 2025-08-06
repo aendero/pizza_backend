@@ -1,11 +1,14 @@
 require('dotenv').config();
 const express = require('express');
 const {Pool} = require('pg');
+const bcrypt = require('bcrypt');
 
 const app = express();
 const port = process.env.PORT||3000;
 
 app.use(express.json());
+const authRouter = express.Router();
+app.use('/api/auth', authRouter)
 
 const pool = new Pool({
     user: process.env.DB_USER,
@@ -17,6 +20,14 @@ const pool = new Pool({
 
 const checkUser = async (id) => {
     const result = await pool.query('SELECT id FROM person WHERE id = $1', [id])
+    if (result.rowCount === 0) {
+        return false
+    }
+    return true
+}
+
+const checkEmail = async (email) => {
+    const result = await pool.query('SELECT email FROM users WHERE email = $1', [email])
     if (result.rowCount === 0) {
         return false
     }
@@ -302,6 +313,48 @@ app.post('/api/person/:id/order', async (req, res) => {
         res.status(500).json({error: 'Внутренняя ошибка сервера'});
     }
 })
+
+app.post('/api/users/checkemail', async (req, res) => {
+    const {email} = req.body
+
+    if (!checkEmail(email)) {
+        return res.status(200).json({message: 'Такая почта существует'})
+    } else {
+        return res.status(200).json({message: 'Такой почты не существует'})
+    }
+})
+
+authRouter.post('/register', async (req, res) => {
+    const {name, age, gender, address, email, password} = req.body;
+
+    if (!checkEmail(email)) return res.status(403).json({error: 'Такая почта уже существует'});
+    if (!password || !name || !age) return res.status(403).json({error: 'Имя, возраст и пароль обязательны'});
+    if (password.length < 8) return res.status(403).json({error: 'Длина пароля должна быть не менее 8 символов'});
+
+    const client = await pool.connect();
+
+    try {
+        const saltRounds = 10;
+        const passwordHash = await bcrypt.hash(password, saltRounds);
+        const personQuery = 'INSERT INTO person(name, age, gender, address) VALUES($1, $2, $3, $4) RETURNING id'
+        const personValues = [name, age, gender || 'female', address || null]
+        const newPerson = await client.query(personQuery, personValues)
+        const newPersonId = newPerson.rows[0].id
+
+        const credentialsQuery = 'INSERT INTO users(person_id, email, password_hash) VALUES($1, $2, $3)'
+        await client.query(credentialsQuery, [newPersonId, email, passwordHash])
+
+        await client.query('COMMIT')
+        res.status(201).json({message: 'Пользовать успешно зарегестрироватн!', userId: newPerson})
+
+        res.status(201).json(`Пользователь ${id} успешно добавлен`)
+    } catch (error) {
+        console.error('Ошибка при добавлении пользователя:', error.stack)
+        res.status(500).json({error: 'Внутренняя ошибка сервера'});
+    }
+})
+
+
 
 app.listen(port, () => {
     console.log(`Сервер запущен на http://localhost:${port}`)
